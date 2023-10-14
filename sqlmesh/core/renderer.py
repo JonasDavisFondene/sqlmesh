@@ -51,6 +51,7 @@ class BaseExpressionRenderer:
         python_env: t.Optional[t.Dict[str, Executable]] = None,
         only_execution_time: bool = False,
         schema: t.Optional[t.Dict[str, t.Any]] = None,
+        default_catalog: t.Optional[str] = None,
     ):
         self._expression = expression
         self._dialect = dialect
@@ -59,6 +60,7 @@ class BaseExpressionRenderer:
         self._jinja_macro_registry = jinja_macro_registry or JinjaMacroRegistry()
         self._python_env = python_env or {}
         self._only_execution_time = only_execution_time
+        self._default_catalog = default_catalog
         self.schema = {} if schema is None else schema
 
         self._cache: t.Dict[CacheKey, t.List[exp.Expression]] = {}
@@ -163,7 +165,7 @@ class BaseExpressionRenderer:
                     raise_config_error(f"Failed to resolve macro for expression. {ex}", self._path)
 
                 if expression:
-                    with _normalize_and_quote(expression, self._dialect) as expression:
+                    with self._normalize_and_quote(expression) as expression:
                         pass
                     resolved_expressions.append(expression)
 
@@ -203,7 +205,7 @@ class BaseExpressionRenderer:
             return expression
 
         expression = expression.copy()
-        with _normalize_and_quote(expression, self._dialect) as expression:
+        with self._normalize_and_quote(expression) as expression:
             return _resolve_tables(
                 expression,
                 snapshots=snapshots,
@@ -228,6 +230,13 @@ class BaseExpressionRenderer:
             to_datetime(execution_time or c.EPOCH),
             runtime_stage,
         )
+
+    @contextmanager
+    def _normalize_and_quote(self, query: E) -> t.Iterator[E]:
+        qualify_tables(query, catalog=self._default_catalog)
+        normalize_identifiers(query, dialect=self._dialect)
+        yield query
+        quote_identifiers(query, dialect=self._dialect)
 
 
 class ExpressionRenderer(BaseExpressionRenderer):
@@ -279,6 +288,7 @@ class QueryRenderer(BaseExpressionRenderer):
         jinja_macro_registry: t.Optional[JinjaMacroRegistry] = None,
         python_env: t.Optional[t.Dict[str, Executable]] = None,
         only_execution_time: bool = False,
+        default_catalog: t.Optional[str] = None,
     ):
         super().__init__(
             expression=query,
@@ -289,6 +299,7 @@ class QueryRenderer(BaseExpressionRenderer):
             python_env=python_env,
             only_execution_time=only_execution_time,
             schema=schema,
+            default_catalog=default_catalog,
         )
 
         self._model_name = model_name
@@ -419,7 +430,7 @@ class QueryRenderer(BaseExpressionRenderer):
         try:
             if should_optimize:
                 query = query.copy()
-                simplify(qualify(query, dialect=self._dialect, schema=schema, infer_schema=False))
+                simplify(qualify(query, dialect=self._dialect, schema=schema, infer_schema=False, catalog=self._default_catalog))
         except SqlglotError as ex:
             failure = True
             logger.error(
@@ -429,7 +440,7 @@ class QueryRenderer(BaseExpressionRenderer):
             if failure or not should_optimize:
                 query = original.copy()
 
-                with _normalize_and_quote(query, self._dialect) as query:
+                with self._normalize_and_quote(query) as query:
                     for select in query.selects:
                         if not isinstance(select, exp.Alias) and select.output_name not in (
                             "*",
@@ -444,14 +455,6 @@ class QueryRenderer(BaseExpressionRenderer):
                             select.replace(alias)
 
         return annotate_types(query, schema=schema)
-
-
-@contextmanager
-def _normalize_and_quote(query: E, dialect: str) -> t.Iterator[E]:
-    qualify_tables(query)
-    normalize_identifiers(query, dialect=dialect)
-    yield query
-    quote_identifiers(query, dialect=dialect)
 
 
 def _resolve_tables(
