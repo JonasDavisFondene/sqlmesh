@@ -284,6 +284,7 @@ class QueryRenderer(BaseExpressionRenderer):
         macro_definitions: t.List[d.MacroDef],
         schema: t.Optional[t.Dict[str, t.Any]] = None,
         model_name: t.Optional[str] = None,
+        model_fqn: t.Optional[str] = None,
         path: Path = Path(),
         jinja_macro_registry: t.Optional[JinjaMacroRegistry] = None,
         python_env: t.Optional[t.Dict[str, Executable]] = None,
@@ -303,6 +304,7 @@ class QueryRenderer(BaseExpressionRenderer):
         )
 
         self._model_name = model_name
+        self._model_fqn = model_fqn
 
         self._optimized_cache: t.Dict[CacheKey, exp.Expression] = {}
 
@@ -466,21 +468,30 @@ def _resolve_tables(
     deployability_index: t.Optional[DeployabilityIndex] = None,
     **render_kwargs: t.Any,
 ) -> E:
+    from sqlmesh.core.model.registry import ModelRegistry
     from sqlmesh.core.snapshot import to_table_mapping
 
     snapshots = snapshots or {}
     table_mapping = table_mapping or {}
     mapping = {**to_table_mapping(snapshots.values(), deployability_index), **table_mapping}
+    model_registry = ModelRegistry.from_snapshots(snapshots.values())
     # if a snapshot is provided but not mapped, we need to expand it or the query
     # won't be valid
-    expand = set(expand) | {name for name in snapshots if name not in mapping}
+    expand = set(expand) | {
+        name
+        for snapshot in snapshots.values()
+        if snapshot.name not in mapping and snapshot.is_model
+        for name in [snapshot.name, snapshot.model.fqn]
+    }
 
     if expand:
 
         def _expand(node: exp.Expression) -> exp.Expression:
             if isinstance(node, exp.Table) and snapshots:
                 name = exp.table_name(node)
-                model = snapshots[name].model if name in snapshots else None
+                if not name:
+                    return node
+                model = model_registry.get(name)
                 if name in expand and model and not model.is_seed and not model.kind.is_external:
                     nested_query = model.render_query(
                         snapshots=snapshots,
