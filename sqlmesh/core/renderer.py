@@ -412,7 +412,7 @@ class QueryRenderer(BaseExpressionRenderer):
         original = query
         failure = False
         missing_deps = set()
-        all_deps = d.find_tables(query, dialect=self._dialect) - {self._model_name}
+        all_deps = d.find_tables(query, default_catalog=self._default_catalog, dialect=self._dialect) - {self._model_name, self._model_fqn}
         should_optimize = not schema.empty or not all_deps
 
         for dep in all_deps:
@@ -468,30 +468,28 @@ def _resolve_tables(
     deployability_index: t.Optional[DeployabilityIndex] = None,
     **render_kwargs: t.Any,
 ) -> E:
-    from sqlmesh.core.model.registry import ModelRegistry
     from sqlmesh.core.snapshot import to_table_mapping
 
     snapshots = snapshots or {}
     table_mapping = table_mapping or {}
     mapping = {**to_table_mapping(snapshots.values(), deployability_index), **table_mapping}
-    model_registry = ModelRegistry.from_snapshots(snapshots.values())
     # if a snapshot is provided but not mapped, we need to expand it or the query
     # won't be valid
     expand = set(expand) | {
-        name
+        snapshot.fqn
         for snapshot in snapshots.values()
-        if snapshot.name not in mapping and snapshot.is_model
-        for name in [snapshot.name, snapshot.model.fqn]
+        if snapshot.fqn not in mapping and snapshot.is_model
     }
 
     if expand:
+        model_mapping = {
+            snapshot.fqn: snapshot.model for snapshot in snapshots.values() if snapshot.is_model
+        }
 
         def _expand(node: exp.Expression) -> exp.Expression:
             if isinstance(node, exp.Table) and snapshots:
                 name = exp.table_name(node)
-                if not name:
-                    return node
-                model = model_registry.get(name)
+                model = model_mapping.get(name)
                 if name in expand and model and not model.is_seed and not model.kind.is_external:
                     nested_query = model.render_query(
                         snapshots=snapshots,
