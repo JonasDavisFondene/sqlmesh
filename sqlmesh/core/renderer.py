@@ -70,7 +70,7 @@ class BaseExpressionRenderer:
         start: t.Optional[TimeLike] = None,
         end: t.Optional[TimeLike] = None,
         execution_time: t.Optional[TimeLike] = None,
-        snapshots: t.Optional[t.Dict[str, Snapshot]] = None,
+        snapshots: t.Optional[t.Iterable[Snapshot]] = None,
         table_mapping: t.Optional[t.Dict[str, str]] = None,
         deployability_index: t.Optional[DeployabilityIndex] = None,
         runtime_stage: RuntimeStage = RuntimeStage.LOADING,
@@ -195,7 +195,7 @@ class BaseExpressionRenderer:
         start: t.Optional[TimeLike] = None,
         end: t.Optional[TimeLike] = None,
         execution_time: t.Optional[TimeLike] = None,
-        snapshots: t.Optional[t.Dict[str, Snapshot]] = None,
+        snapshots: t.Optional[t.Iterable[Snapshot]] = None,
         table_mapping: t.Optional[t.Dict[str, str]] = None,
         expand: t.Iterable[str] = tuple(),
         deployability_index: t.Optional[DeployabilityIndex] = None,
@@ -245,7 +245,7 @@ class ExpressionRenderer(BaseExpressionRenderer):
         start: t.Optional[TimeLike] = None,
         end: t.Optional[TimeLike] = None,
         execution_time: t.Optional[TimeLike] = None,
-        snapshots: t.Optional[t.Dict[str, Snapshot]] = None,
+        snapshots: t.Optional[t.Iterable[Snapshot]] = None,
         table_mapping: t.Optional[t.Dict[str, str]] = None,
         deployability_index: t.Optional[DeployabilityIndex] = None,
         expand: t.Iterable[str] = tuple(),
@@ -313,7 +313,7 @@ class QueryRenderer(BaseExpressionRenderer):
         start: t.Optional[TimeLike] = None,
         end: t.Optional[TimeLike] = None,
         execution_time: t.Optional[TimeLike] = None,
-        snapshots: t.Optional[t.Dict[str, Snapshot]] = None,
+        snapshots: t.Optional[t.Iterable[Snapshot]] = None,
         table_mapping: t.Optional[t.Dict[str, str]] = None,
         deployability_index: t.Optional[DeployabilityIndex] = None,
         expand: t.Iterable[str] = tuple(),
@@ -462,7 +462,7 @@ class QueryRenderer(BaseExpressionRenderer):
 def _resolve_tables(
     expression: E,
     *,
-    snapshots: t.Optional[t.Dict[str, Snapshot]] = None,
+    snapshots: t.Optional[t.Iterable[Snapshot]] = None,
     table_mapping: t.Optional[t.Dict[str, str]] = None,
     expand: t.Iterable[str] = tuple(),
     deployability_index: t.Optional[DeployabilityIndex] = None,
@@ -470,20 +470,18 @@ def _resolve_tables(
 ) -> E:
     from sqlmesh.core.snapshot import to_table_mapping
 
-    snapshots = snapshots or {}
+    snapshots = snapshots or []
     table_mapping = table_mapping or {}
-    mapping = {**to_table_mapping(snapshots.values(), deployability_index), **table_mapping}
+    mapping = {**to_table_mapping(snapshots, deployability_index), **table_mapping}
     # if a snapshot is provided but not mapped, we need to expand it or the query
     # won't be valid
     expand = set(expand) | {
-        snapshot.fqn
-        for snapshot in snapshots.values()
-        if snapshot.fqn not in mapping and snapshot.is_model
+        snapshot.fqn for snapshot in snapshots if snapshot.fqn not in mapping and snapshot.is_model
     }
 
     if expand:
         model_mapping = {
-            snapshot.fqn: snapshot.model for snapshot in snapshots.values() if snapshot.is_model
+            snapshot.fqn: snapshot.model for snapshot in snapshots if snapshot.is_model
         }
 
         def _expand(node: exp.Expression) -> exp.Expression:
