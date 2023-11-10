@@ -2439,88 +2439,7 @@ def test_signals():
     )
 
 
-def test_default_catalog(assert_exp_eq):
-    expressions = d.parse(
-        """
-        MODEL (
-            name db.table,
-            default_catalog CATALOG,
-        );
-        SELECT x
-        FROM db.source
-        """
-    )
-
-    model = load_sql_based_model(expressions)
-    assert model.default_catalog == "catalog"
-    assert model.fqn == "catalog.db.table"
-
-    assert_exp_eq(
-        model.render_query(),
-        """
-        SELECT
-          "x" AS "x"
-          FROM "catalog"."db"."source" AS "source"
-        """,
-    )
-
-    # Verify that we don't try to qualify CTE expressions
-    expressions = d.parse(
-        """
-        MODEL (
-            name db.table,
-            default_catalog "CATALOG-1",
-        );
-        with cte as (
-            SELECT x
-            FROM db.source
-        )
-        select * from cte
-        """
-    )
-
-    model = load_sql_based_model(expressions)
-    assert model.default_catalog == "CATALOG-1"
-    assert model.fqn == '"CATALOG-1".db.table'
-
-    assert_exp_eq(
-        model.render_query(),
-        """
-        with "cte" as (
-            SELECT "x"
-            FROM "CATALOG-1"."db"."source" AS "source"
-        )
-        select * from "cte"
-        """,
-    )
-
-    # Test having a default catalog and a catalog set on the model name
-    expressions = d.parse(
-        """
-        MODEL (
-            name catalog.db.table,
-            default_catalog other_catalog,
-        );
-        SELECT x
-        FROM db.source
-        """
-    )
-
-    model = load_sql_based_model(expressions)
-    assert model.default_catalog == "other_catalog"
-    assert model.fqn == "catalog.db.table"
-
-    assert_exp_eq(
-        model.render_query(),
-        """
-        SELECT
-          "x" AS "x"
-          FROM "other_catalog"."db"."source" AS "source"
-        """,
-    )
-
-
-def test_default_catalog_hash(assert_exp_eq):
+def test_default_catalog_sql(assert_exp_eq):
     """
     If a default catalog changes then we only want this to effect hashing if the model itself was effected
     because a previously unqualified reference is now qualified.
@@ -2532,15 +2451,14 @@ def test_default_catalog_hash(assert_exp_eq):
     expressions = d.parse(
         """
         MODEL (
-            name catalog.db.table,
-            default_catalog catalog,
+            name catalog.db.table
         );
         SELECT x
         FROM catalog.db.source
         """
     )
 
-    model = load_sql_based_model(expressions)
+    model = load_sql_based_model(expressions, default_catalog="catalog")
     assert model.default_catalog == "catalog"
     assert model.name == "catalog.db.table"
     assert model.fqn == "catalog.db.table"
@@ -2586,15 +2504,14 @@ def test_default_catalog_hash(assert_exp_eq):
     expressions = d.parse(
         """
         MODEL (
-            name catalog.db.table,
-            default_catalog other_catalog,
+            name catalog.db.table
         );
         SELECT x
         FROM catalog.db.source
         """
     )
 
-    model = load_sql_based_model(expressions)
+    model = load_sql_based_model(expressions, default_catalog="other_catalog")
     assert model.default_catalog == "other_catalog"
     assert model.name == "catalog.db.table"
     assert model.fqn == "catalog.db.table"
@@ -2614,20 +2531,19 @@ def test_default_catalog_hash(assert_exp_eq):
     expressions = d.parse(
         """
         MODEL (
-            name catalog.db.table,
-            default_catalog other_catalog,
+            name catalog.db.table
         );
         SELECT x
         FROM db.source
         """
     )
 
-    model = load_sql_based_model(expressions)
+    model = load_sql_based_model(expressions, default_catalog="other_catalog")
     assert model.default_catalog == "other_catalog"
     assert model.name == "catalog.db.table"
     assert model.fqn == "catalog.db.table"
 
-    assert model.data_hash == "1219137124" != HASH_WITH_CATALOG
+    assert model.data_hash == "1219137124"
 
     # test that hash changes if the only change to a model is it's fully qualified name
     expressions = d.parse(
@@ -2645,22 +2561,165 @@ def test_default_catalog_hash(assert_exp_eq):
     assert model.name == "db.table"
     assert model.fqn == "db.table"
 
-    assert model.data_hash == "3100514156" != HASH_WITH_CATALOG
+    assert model.data_hash == "3100514156"
 
     expressions = d.parse(
         """
         MODEL (
-            name db.table,
-            default_catalog catalog,
+            name db.table
         );
         SELECT x
         FROM catalog.db.source
         """
     )
 
-    model = load_sql_based_model(expressions)
+    model = load_sql_based_model(expressions, default_catalog="catalog")
     assert model.default_catalog == "catalog"
     assert model.name == "db.table"
     assert model.fqn == "catalog.db.table"
 
     assert model.data_hash == HASH_WITH_CATALOG
+
+    expressions = d.parse(
+        """
+        MODEL (
+            name table
+        );
+        SELECT x
+        FROM source
+        """
+    )
+
+    model = load_sql_based_model(expressions, default_catalog="catalog")
+    assert model.default_catalog == "catalog"
+    assert model.name == "table"
+    assert model.fqn == "table"
+
+    assert model.data_hash == "1309955101"
+
+
+def test_default_catalog_python():
+    HASH_WITH_CATALOG = "2868148493"
+
+    @model(name="db.table", kind="full", columns={'"COL"': "int"})
+    def my_model(context, **kwargs):
+        context.table("dependency.table")
+
+    m = model.get_registry()["db.table"].model(
+        module_path=Path("."),
+        path=Path("."),
+    )
+
+    assert m.default_catalog is None
+    assert m.name == "db.table"
+    assert m.fqn == "db.table"
+    assert m.depends_on == {"dependency.table"}
+
+    assert m.data_hash == "3241366367"
+
+    m = model.get_registry()["db.table"].model(
+        module_path=Path("."),
+        path=Path("."),
+        default_catalog="catalog",
+    )
+
+    assert m.default_catalog == "catalog"
+    assert m.name == "db.table"
+    assert m.fqn == "catalog.db.table"
+    assert m.depends_on == {"catalog.dependency.table"}
+
+    # This ideally would be `m.data_hash == HASH_WITH_CATALOG`. The reason it is not is because when we hash
+    # the python function we make the hash out of the actual logic of the function which means `context.table("dependency.table")`
+    # is used when really is should be `context.table("catalog.dependency.table")`.
+    assert m.data_hash == "81574919"
+
+    @model(name="catalog.db.table", kind="full", columns={'"COL"': "int"})
+    def my_model(context, **kwargs):
+        context.table("catalog.dependency.table")
+
+    m = model.get_registry()["catalog.db.table"].model(
+        module_path=Path("."),
+        path=Path("."),
+        default_catalog="other_catalog",
+    )
+
+    assert m.default_catalog == "other_catalog"
+    assert m.name == "catalog.db.table"
+    assert m.fqn == "catalog.db.table"
+    assert m.depends_on == {"catalog.dependency.table"}
+
+    assert m.data_hash == HASH_WITH_CATALOG
+
+    @model(name="catalog.db.table2", kind="full", columns={'"COL"': "int"})
+    def my_model(context, **kwargs):
+        context.table("dependency.table")
+
+    m = model.get_registry()["catalog.db.table2"].model(
+        module_path=Path("."),
+        path=Path("."),
+        default_catalog="other_catalog",
+    )
+
+    assert m.default_catalog == "other_catalog"
+    assert m.name == "catalog.db.table2"
+    assert m.fqn == "catalog.db.table2"
+    assert m.depends_on == {"other_catalog.dependency.table"}
+
+    assert m.data_hash == "3894343957"
+
+    @model(name="table", kind="full", columns={'"COL"': "int"})
+    def my_model(context, **kwargs):
+        context.table("table2")
+
+    m = model.get_registry()["table"].model(
+        module_path=Path("."),
+        path=Path("."),
+        default_catalog="catalog",
+    )
+
+    assert m.default_catalog == "catalog"
+    assert m.name == "table"
+    assert m.fqn == "table"
+    assert m.depends_on == {"table2"}
+
+    assert m.data_hash == "2479007645"
+
+
+def test_default_catalog_external_model():
+    HASH_WITH_CATALOG = "997150691"
+
+    model = create_external_model("db.table", columns={"a": "int", "limit": "int"})
+    assert model.default_catalog is None
+    assert model.name == "db.table"
+    assert model.fqn == "db.table"
+
+    assert model.data_hash == "2494440967"
+
+    model = create_external_model(
+        "db.table", columns={"a": "int", "limit": "int"}, default_catalog="catalog"
+    )
+    assert model.default_catalog == "catalog"
+    assert model.name == "db.table"
+    assert model.fqn == "catalog.db.table"
+
+    assert model.data_hash == HASH_WITH_CATALOG
+
+    model = create_external_model(
+        "catalog.db.table", columns={"a": "int", "limit": "int"}, default_catalog="other_catalog"
+    )
+    assert model.default_catalog == "other_catalog"
+    assert model.name == "catalog.db.table"
+    assert model.fqn == "catalog.db.table"
+
+    assert model.data_hash == HASH_WITH_CATALOG
+
+    # Verify schemaless table gets nothing applied
+    model = create_external_model(
+        "table", columns={"a": "int", "limit": "int"}, default_catalog="catalog"
+    )
+
+    assert model.default_catalog == "catalog"
+    assert model.name == "table"
+    assert model.fqn == "table"
+
+    assert model.data_hash == "371607835"

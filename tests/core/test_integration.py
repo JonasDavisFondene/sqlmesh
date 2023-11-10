@@ -64,7 +64,6 @@ def plan_choice(plan: Plan, choice: SnapshotChangeCategory) -> None:
 @pytest.mark.parametrize(
     "context_fixture",
     ["sushi_context", "sushi_default_catalog"],
-    # ["sushi_default_catalog"],
 )
 def test_forward_only_plan_with_effective_date(context_fixture: Context, request):
     context = request.getfixturevalue(context_fixture)
@@ -1542,28 +1541,38 @@ def test_environment_suffix_target_table(mocker: MockerFixture):
 
 @pytest.mark.integration
 @pytest.mark.core_integration
-def test_ignored_snapshots(sushi_context: Context):
+@pytest.mark.parametrize(
+    "context_fixture",
+    ["sushi_context", "sushi_default_catalog"],
+)
+def test_ignored_snapshots(context_fixture: Context, request):
+    context = request.getfixturevalue(context_fixture)
     environment = "dev"
-    apply_to_environment(sushi_context, environment)
+    apply_to_environment(context, environment)
     # Make breaking change to model upstream of a depends_on_past model
-    sushi_context.upsert_model("sushi.order_items", stamp="1")
+    context.upsert_model("sushi.order_items", stamp="1")
     # Apply the change starting at a date later then the beginning of the downstream depends_on_past model
     plan = apply_to_environment(
-        sushi_context, environment, choice=SnapshotChangeCategory.BREAKING, plan_start="2 days ago"
+        context, environment, choice=SnapshotChangeCategory.BREAKING, plan_start="2 days ago"
     )
-    revenue_lifetime_snapshot = sushi_context._model_fqn_to_snapshot[
-        "sushi.customer_revenue_lifetime"
+    catalog_prefix = context.default_catalog + "." if context.default_catalog else ""
+    revenue_lifetime_snapshot = context._model_fqn_to_snapshot[
+        catalog_prefix + "sushi.customer_revenue_lifetime"
     ]
     # Validate that the depends_on_past model is ignored
     assert plan.ignored_snapshot_ids == {revenue_lifetime_snapshot.snapshot_id}
     # Validate that the table was really ignored
-    metadata = DuckDBMetadata.from_context(sushi_context)
+    metadata = DuckDBMetadata.from_context(context)
     # Make sure prod view exists
-    assert exp.to_table("sushi.customer_revenue_lifetime") in metadata.qualified_views
+    catalog = "memory" if context_fixture == "sushi_context" else "in_memory"
+    assert exp.table_("customer_revenue_lifetime", "sushi", catalog) in metadata.qualified_views
     # Make sure dev view doesn't exist since it was ignored
-    assert exp.to_table("sushi__dev.customer_revenue_lifetime") not in metadata.qualified_views
+    assert (
+        exp.table_("customer_revenue_lifetime", "sushi__dev", catalog)
+        not in metadata.qualified_views
+    )
     # Make sure that dev view for order items was created
-    assert exp.to_table("sushi__dev.order_items") in metadata.qualified_views
+    assert exp.table_("order_items", "sushi__dev", catalog) in metadata.qualified_views
 
 
 @pytest.mark.integration
